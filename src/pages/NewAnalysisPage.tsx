@@ -1,4 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { PlannerPanel } from '../components/PlannerPanel';
+import { freezeOnServer } from '../lib/api/persist';
+import { useAuth } from '../lib/auth';
 import { engineSourceDigest } from '../lib/engineSource';
 import { parseCsvBytes, type ParsedCsv } from '../lib/falsify/csv';
 import { workshopFixture, type Fixture } from '../lib/falsify/generate';
@@ -97,7 +100,10 @@ export function NewAnalysisPage() {
   const [secondaryOrder, setSecondaryOrder] = useState<SecondaryKind[]>(() => parent?.protocol.secondaryOrder ?? DEFAULT_SECONDARY_ORDER);
   const [plannerNote, setPlannerNote] = useState<string | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
-  const [preview, setPreview] = useState<{ protocol: ProtocolV1; hash: string } | null>(null);
+  const [preview, setPreview] = useState<{ protocol: ProtocolV1; hash: string; key: string } | null>(null);
+  const auth = useAuth();
+  const [serverFreeze, setServerFreeze] = useState(false);
+  const [freezing, setFreezing] = useState(false);
 
   useEffect(() => () => clearRevision(), []);
 
@@ -198,14 +204,12 @@ export function NewAnalysisPage() {
       return;
     }
     setErrors([]);
-    setPreview({ protocol: built.protocol, hash: built.hash });
+    setPreview({ protocol: built.protocol, hash: built.hash, key: crypto.randomUUID() });
   }
 
-  function onFreeze() {
+  async function onFreeze() {
     if (!source || !preview) return;
-    const id = crypto.randomUUID();
-    putSession({
-      id,
+    const base = {
       createdAt: new Date().toISOString(),
       datasetName: nameOf(source),
       table: tableOf(source),
@@ -215,10 +219,30 @@ export function NewAnalysisPage() {
       protocolHash: preview.hash,
       originalExecutionId: null,
       executions: [],
-      persistence: { kind: 'local' },
       share: null,
-      serverExecutionId: null,
-    });
+      storedDerived: null,
+      savedExecutionIds: [],
+    };
+    if (serverFreeze) {
+      setFreezing(true);
+      // The idempotency key is fixed per preview, so a retry cannot create a second analysis.
+      const result = await freezeOnServer(base, preview.key);
+      setFreezing(false);
+      if (!result.ok) {
+        setErrors([`The server did not record the protocol: ${result.error}. Nothing was run.`]);
+        return;
+      }
+      putSession({
+        ...base,
+        id: result.value.analysisId,
+        persistence: { kind: 'saved', origin: 'server_frozen', serverReceivedAt: result.value.serverReceivedAt },
+        serverExecutionId: result.value.executionId,
+      });
+      window.location.hash = `#/analyses/${encodeURIComponent(result.value.analysisId)}`;
+      return;
+    }
+    const id = crypto.randomUUID();
+    putSession({ ...base, id, persistence: { kind: 'local' }, serverExecutionId: null });
     window.location.hash = `#/analyses/${encodeURIComponent(id)}`;
   }
 
@@ -270,7 +294,7 @@ export function NewAnalysisPage() {
       {source?.kind === 'revision' ? (
         <p className="note">
           Revising “{source.parent.protocol.claim.statement}”. The parent analysis and its evidence stay unchanged; this freezes a
-          new protocol linked by parentAnalysisId. Changing settings after seeing results is exploration, and the record says so.
+          new protocol linked by parentAnalysisId. Changing settings after seeing results is exploration; the new record is labelled as a revision.
         </p>
       ) : null}
 
@@ -395,7 +419,19 @@ export function NewAnalysisPage() {
             </div>
           </details>
 
-          {/* P6: metadata-only planner panel slots in here. */}
+          <PlannerPanel
+            key={`${form.statement}|${form.x}|${form.y}|${form.direction}|${form.deltaText}|${form.xUnits}|${form.yUnits}`}
+            columns={tableOf(source).columns}
+            rowCount={tableOf(source).rows.length}
+            headerMap={headerMapOf(source)}
+            columnsMeta={columnsMetaOf(source)}
+            claim={{ statement: form.statement, x: form.x, y: form.y, direction: form.direction, deltaText: form.deltaText, xUnits: form.xUnits, yUnits: form.yUnits }}
+            onAccept={(proposal) => {
+              setSecondaryOrder(proposal.secondaryOrder);
+              setPlannerNote(proposal.note);
+              update(proposal.covariate ? { covariateMode: 'asserted', z: proposal.covariate, confirmed: false } : { covariateMode: 'none', z: '', confirmed: false });
+            }}
+          />
           {plannerNote ? <p className="note">Model proposal text (not a result, not a fact): {plannerNote}</p> : null}
 
           <button type="submit">Preview the protocol</button>
@@ -427,8 +463,14 @@ export function NewAnalysisPage() {
             <li>Protocol hash <code>{shortHash(preview.hash)}</code>. Freezing records it before any numbers are computed.</li>
           </ul>
           <p className="muted">“Protocol frozen” means fixed in this record before execution here. It is not an independent preregistration and does not undo earlier exploration.</p>
+          {auth.configured && auth.email ? (
+            <label>
+              <input type="checkbox" checked={serverFreeze} onChange={(event) => setServerFreeze(event.target.checked)} />
+              Get a server receipt before running: upload these {preview.protocol.dataset.rowCount} rows and the protocol privately to my account now.
+            </label>
+          ) : null}
           <div className="actions">
-            <button type="button" onClick={onFreeze}>Freeze protocol</button>
+            <button type="button" disabled={freezing} onClick={() => void onFreeze()}>{freezing ? 'Recording…' : serverFreeze ? 'Freeze with server receipt' : 'Freeze protocol'}</button>
             <button type="button" className="secondary" onClick={() => setPreview(null)}>Edit</button>
           </div>
         </section>
