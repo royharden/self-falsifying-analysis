@@ -1,11 +1,11 @@
-import type { Verdict } from '../lib/falsify/types';
+import type { Headline } from '../lib/falsify/types';
 
-const LABEL: Record<Verdict, string> = {
-  falsified: 'Falsified',
-  survived: 'Survived',
-  unsupported: 'Unsupported',
-};
-
-export function VerdictStamp({ verdict }: { verdict: Verdict }) {
-  return <p className={`stamp stamp-${verdict}`}>{LABEL[verdict]}</p>;
+export function VerdictStamp({ headline }: { headline: Headline }) {
+  return (
+    <div className={`stamp stamp-${headline.code}`} role="status">
+      <strong>{headline.title}</strong>
+      <span>{headline.reason}</span>
+      {headline.scopeNote ? <em>{headline.scopeNote}</em> : null}
+    </div>
+  );
 }

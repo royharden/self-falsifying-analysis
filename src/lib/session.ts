@@ -1,5 +1,9 @@
 import type { AnalysisRecord } from './record';
 
+/**
+ * In-memory store for this tab. Nothing is persisted locally or uploaded
+ * automatically; a reload loses unsaved work (the setup banner says so).
+ */
 let records: AnalysisRecord[] = [];
 const listeners = new Set<() => void>();
 
@@ -23,4 +27,20 @@ export function putSession(record: AnalysisRecord): void {
 export function subscribeSession(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+let pendingRevision: AnalysisRecord | null = null;
+
+/** Hands a parent record to the next New analysis page (revision linked by parentAnalysisId). */
+export function setRevision(record: AnalysisRecord): void {
+  pendingRevision = record;
+}
+
+/** Non-destructive read: StrictMode may call state initializers twice. */
+export function takeRevision(): AnalysisRecord | null {
+  return pendingRevision;
+}
+
+export function clearRevision(): void {
+  pendingRevision = null;
 }

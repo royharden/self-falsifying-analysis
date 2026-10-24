@@ -1,76 +1,44 @@
 import { useEffect, useState } from 'react';
-import { listRemote, type RemoteSummary } from '../lib/api/persist';
-import { useAuth } from '../lib/auth';
-import { formatKind } from '../lib/format';
+import { SavedList } from '../components/SavedList';
+import { assess } from '../lib/assess';
 import { listSession, subscribeSession } from '../lib/session';
 
 export function HomePage() {
-  const auth = useAuth();
-  const [localTick, setLocalTick] = useState(0);
-  const [remote, setRemote] = useState<RemoteSummary[]>([]);
-  const [remoteError, setRemoteError] = useState<string | null>(null);
-
-  useEffect(() => subscribeSession(() => setLocalTick((value) => value + 1)), []);
-
-  useEffect(() => {
-    if (!auth.email) {
-      setRemote([]);
-      return undefined;
-    }
-    let active = true;
-    void listRemote().then((result) => {
-      if (!active) return;
-      if (!result.ok) setRemoteError(result.error);
-      else {
-        setRemoteError(null);
-        setRemote(result.rows);
-      }
-    });
-    return () => {
-      active = false;
-    };
-  }, [auth.email]);
-
-  const local = listSession().filter((record) => !record.saved);
-  void localTick;
+  const [, setTick] = useState(0);
+  useEffect(() => subscribeSession(() => setTick((value) => value + 1)), []);
+  const local = listSession().filter((record) => record.persistence.kind === 'local');
 
   return (
     <section>
-      <h1>Try to break the claim, then rerun the attempt.</h1>
+      <h1>State a claim, freeze how to challenge it, then let anyone rerun the challenge.</h1>
       <p>
-        State an association. A frozen menu of attacks looks for a placebo, a confounder, a fragile subset,
-        and a rank specification. Every attempt keeps the program that produced it. Open one and run it again.
+        You declare a directional association, a practical threshold δ and at most one covariate you assert is a pre-exposure
+        common cause — before any number is computed. A deterministic engine then runs a baseline fit, the primary adjustment and
+        three secondary diagnostics. Every check, including the failed and the inapplicable ones, stays in the record with its
+        recipe and the exact kernel source, and any reader can rerun it and compare every field.
       </p>
       <div className="actions">
-        <a className="button" href="#/new">Run the workshop demo</a>
-        <a className="button secondary" href="#/bench">Planted-effect bench</a>
+        <a className="button" href="#/new">Start with the workshop demo</a>
+        <a className="button secondary" href="#/bench">Seeded benchmark</a>
       </div>
-      <h2>In this browser</h2>
-      {local.length === 0 ? <p className="muted">No unsaved run yet.</p> : (
+      <p className="muted">
+        This is a conditional-association check under declared assumptions, not causal proof. Unobserved confounding, the covariate’s
+        causal role and prior claim selection are not tested.
+      </p>
+      <h2>In this browser tab</h2>
+      {local.length === 0 ? (
+        <p className="muted">No unsaved analysis yet. Local work is lost on reload unless exported or saved.</p>
+      ) : (
         <ul className="index">
           {local.map((record) => (
             <li key={record.id}>
-              <a href={`#/analyses/${encodeURIComponent(record.id)}`}>{record.claim.statement}</a>
-              <span>{formatKind(record.run.verdict)}</span>
+              <a href={`#/analyses/${encodeURIComponent(record.id)}`}>“{record.protocol.claim.statement}”</a>
+              <span>{assess(record).headline?.title ?? 'not run'}</span>
             </li>
           ))}
         </ul>
       )}
-      <h2>Saved runs</h2>
-      {!auth.configured ? <p className="muted">Saving needs VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.</p> : null}
-      {auth.configured && !auth.email ? <p className="muted"><a href="#/login">Sign in</a> to load saved runs.</p> : null}
-      {remoteError ? <p className="error" role="alert">{remoteError}</p> : null}
-      {auth.email && remote.length === 0 && !remoteError ? <p className="muted">No saved runs.</p> : null}
-      {remote.length > 0 ? (
-        <ul className="index">
-          {remote.map((row) => (
-            <li key={row.id}>
-              <a href={`#/analyses/${row.id}`}>{row.statement}</a>
-              <span>{formatKind(row.verdict)}{row.isShared ? ' · shared' : ''}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      <SavedList />
     </section>
   );
 }

@@ -1,92 +1,99 @@
-import { formatKind, formatNumber } from '../lib/format';
+import type { Assessment } from '../lib/assess';
+import { LIMITATION_TEXT } from '../lib/falsify/aggregate';
+import { executionOrder } from '../lib/falsify/planSchema';
+import { RECIPE_TITLES } from '../lib/falsify/sourceText';
+import { formatKind, formatNumber, shortHash } from '../lib/format';
 import type { AnalysisRecord } from '../lib/record';
+import { safeAttemptSentence } from '../lib/templates';
+import { IntervalChart } from './IntervalChart';
 import { VerdictStamp } from './VerdictStamp';
 
 export function LogView({
   record,
+  assessment,
   attemptHref,
 }: {
   record: AnalysisRecord;
+  assessment: Assessment;
   attemptHref: (ordinal: number) => string;
 }) {
-  const { run } = record;
+  const { protocol } = record;
+  const { claim } = protocol;
+  const unit = `${claim.yUnits} per ${claim.xUnits}`;
+  const execution = assessment.execution;
+  const grounded = assessment.integrityErrors.length === 0;
   return (
     <article>
       <p className="kicker">{record.datasetName}</p>
-      <h1>{record.claim.statement}</h1>
-      <VerdictStamp verdict={run.verdict} />
-      <p>{run.summary}</p>
-      <p className="muted">
-        {run.plan.planner === 'llm' ? 'Model menu, frozen before execution.' : 'Deterministic menu, frozen before execution.'}
-        {' '}Seed {run.plan.seed}. Alpha {run.plan.alpha}. {run.attempts.length} attempts.
-        {' '}Outcome {record.claim.outcome}, predictor {record.claim.predictor}, direction {record.claim.direction}.
-      </p>
-      {run.plan.rationale ? <p className="note">Planner note, not a result: {run.plan.rationale}</p> : null}
-      <dl className="metrics">
-        <div>
-          <dt>Fisher combination</dt>
-          <dd>{formatNumber(run.fisherP, 4)}</dd>
-        </div>
-        <div>
-          <dt>Descriptive e product</dt>
-          <dd>
-            {formatNumber(run.eProduct, 3)}
-            {run.eProductCapped ? ' (capped)' : ''}
-          </dd>
-        </div>
-      </dl>
-      <p className="muted">
-        The e product multiplies a p-to-e calibrator across robustness attacks on this same table.
-        The attacks are dependent, so the product is not a Type-I error guarantee.
-      </p>
-      {run.adjusted.length > 0 ? (
-        <div className="table-wrap">
-          <table>
-            <caption>Benjamini-Hochberg adjusted p-values for attacks that produced one</caption>
-            <thead>
-              <tr>
-                <th>Attack</th>
-                <th>p</th>
-                <th>Adjusted</th>
-              </tr>
-            </thead>
-            <tbody>
-              {run.adjusted.map((item) => (
-                <tr key={`${item.ordinal}-${item.kind}`}>
-                  <td>{formatKind(item.kind)}</td>
-                  <td>{formatNumber(item.p)}</td>
-                  <td>{formatNumber(item.adjusted)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <h1 className="claim">“{claim.statement}”</h1>
+      {assessment.headline ? <VerdictStamp headline={assessment.headline} /> : null}
+      {!execution ? <p className="note">Protocol frozen. The engine has not run yet.</p> : null}
+      {execution?.status === 'running' ? <p className="note">Running…</p> : null}
+      {assessment.integrityErrors.length > 0 ? (
+        <div className="error" role="alert">
+          <p>Integrity check failed; no headline is generated from this record.</p>
+          <ul>
+            {assessment.integrityErrors.slice(0, 8).map((error) => <li key={error}>{error}</li>)}
+          </ul>
         </div>
       ) : null}
-      <div className="table-wrap">
-        <table>
-          <caption>Attempt log</caption>
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Attack</th>
-              <th>Estimate</th>
-              <th>p</th>
-              <th>Result</th>
-            </tr>
-          </thead>
-          <tbody>
-            {run.attempts.map((attempt) => (
-              <tr key={attempt.ordinal}>
-                <td>{attempt.ordinal + 1}</td>
-                <td><a href={attemptHref(attempt.ordinal)}>{formatKind(attempt.kind)}</a></td>
-                <td>{formatNumber(attempt.estimate)}</td>
-                <td>{formatNumber(attempt.pValue)}</td>
-                <td>{attempt.error ? 'Could not run' : attempt.undermines ? 'Overturns' : attempt.supportsClaim ? 'Holds' : 'No effect'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+
+      <dl className="protocol">
+        <div><dt>Predictor → outcome</dt><dd>{claim.x} → {claim.y} ({claim.direction})</dd></div>
+        <div><dt>Practical threshold</dt><dd>δ = {formatNumber(claim.delta)} {unit}</dd></div>
+        <div>
+          <dt>Primary adjustment</dt>
+          <dd>{claim.z ? `${claim.z} — asserted by the user as a pre-exposure common cause` : 'None — the user declared no defensible covariate'}</dd>
+        </div>
+        <div><dt>Rows</dt><dd>{protocol.dataset.rowCount} (iid assumed by the user, not checked)</dd></div>
+        <div><dt>Seed / permutations</dt><dd>{protocol.seed} / {protocol.permutations}</dd></div>
+        <div><dt>Policy / engine</dt><dd>{protocol.policyId} v{protocol.policyVersion} / {protocol.engineVersion}</dd></div>
+        <div><dt>Protocol hash</dt><dd><code>{shortHash(record.protocolHash)}</code></dd></div>
+        <div><dt>Data hash</dt><dd><code>{shortHash(protocol.dataset.normalizedHash)}</code></dd></div>
+        <div><dt>Kernel source digest</dt><dd><code>{shortHash(protocol.engineSourceDigest)}</code></dd></div>
+      </dl>
+
+      {grounded && execution ? (
+        <IntervalChart
+          rows={[
+            { label: 'Baseline', ordinal: 0 },
+            { label: claim.z ? `Adjusted for ${claim.z}` : 'Primary (none)', ordinal: 1 },
+          ]}
+          book={assessment.book}
+          delta={claim.delta}
+          unit={unit}
+        />
+      ) : null}
+
+      {execution ? (
+        <section className="attempts">
+          <h2>Every planned check</h2>
+          <ol className="attempt-list">
+            {executionOrder(protocol).map((ordinal) => {
+              const attempt = execution.attempts.find((item) => item.ordinal === ordinal);
+              const kind = protocol.recipes[ordinal].kind;
+              return (
+                <li key={ordinal} className={`attempt attempt-${attempt?.outcome ?? 'pending'}`}>
+                  <a href={attemptHref(ordinal)}>{RECIPE_TITLES[kind]}</a>
+                  <span className="outcome">{attempt ? formatKind(attempt.outcome) : execution.status === 'running' ? 'pending' : 'missing'}</span>
+                  {attempt && grounded ? <p>{safeAttemptSentence(attempt, assessment.book, protocol)}</p> : null}
+                </li>
+              );
+            })}
+          </ol>
+          {assessment.headline ? (
+            <p className="muted">
+              Coverage: {assessment.headline.coverage.planned} planned, {assessment.headline.coverage.completed} completed,{' '}
+              {assessment.headline.coverage.noFlag} no flag, {assessment.headline.coverage.flagged} flagged,{' '}
+              {assessment.headline.coverage.inapplicable} inapplicable, {assessment.headline.coverage.error} error,{' '}
+              {assessment.headline.coverage.cancelled} cancelled, {assessment.headline.coverage.interrupted} interrupted.
+              {' '}Secondary diagnostics never change the headline.
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
+      <p className="limitation">{LIMITATION_TEXT}</p>
     </article>
   );
 }

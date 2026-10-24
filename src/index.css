@@ -67,18 +67,65 @@ h2 { font-size: 1.25rem; margin-top: 1.6rem; }
 }
 
 .stamp {
-  display: inline-block;
-  margin: 0.2rem 0 0.8rem;
-  padding: 0.15rem 0.55rem;
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.2rem 0 1rem;
+  padding: 0.6rem 0.8rem;
   border: 2px solid currentColor;
+}
+
+.stamp strong {
   font-family: Consolas, ui-monospace, monospace;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.stamp-falsified { color: #9d1c1c; }
-.stamp-survived { color: #1d6b3a; }
-.stamp-unsupported { color: #8a5a12; }
+.stamp span, .stamp em { color: #1c1915; }
+
+.stamp-challenged { color: #9d1c1c; }
+.stamp-not_challenged { color: #1d6b3a; }
+.stamp-not_reproduced { color: #8a5a12; }
+.stamp-inconclusive, .stamp-limited_unadjusted { color: #5e574c; }
+.stamp-integrity_error { color: #9d1c1c; background: #fbeaea; }
+
+.claim { font-style: italic; }
+
+.protocol {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.4rem 1rem;
+  margin: 1rem 0;
+}
+
+.protocol dt { font-size: 0.8rem; color: #5e574c; }
+.protocol dd { margin: 0; }
+
+.interval-chart { margin: 1rem 0; }
+.interval-chart svg { width: 100%; height: auto; background: #fffdf8; border: 1px solid #d9d0c1; }
+.interval-chart .zero { stroke: #9a917f; stroke-dasharray: 3 3; }
+.interval-chart .delta { stroke: #9d1c1c; stroke-width: 2; }
+.interval-chart .interval { stroke: #243e73; stroke-width: 4; }
+.interval-chart .interval-mid { fill: #243e73; }
+.interval-chart text { font-family: Consolas, ui-monospace, monospace; font-size: 12px; fill: #1c1915; }
+.interval-chart figcaption { font-size: 0.85rem; color: #5e574c; }
+
+.attempt-list { padding-left: 1.2rem; }
+.attempt-list li { margin-bottom: 0.7rem; }
+.attempt-list .outcome {
+  margin-left: 0.6rem;
+  font-family: Consolas, ui-monospace, monospace;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+}
+.attempt-list p { margin: 0.2rem 0 0; }
+
+.limitation { border-left: 3px solid #9a917f; padding-left: 0.7rem; color: #5e574c; }
+.ok { color: #1d6b3a; }
+.indent { margin-left: 1.6rem; }
+.columns { margin: 0.4rem 0 0; }
+.preview { border-top: 2px solid #1c1915; margin-top: 1.5rem; }
+table.compact { width: auto; }
+code { font-family: Consolas, ui-monospace, monospace; font-size: 0.9em; }
 
 .actions, .form-grid {
   display: flex;
