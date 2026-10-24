@@ -1,0 +1,28 @@
+{
+  "manifestVersion": 1,
+  "generatorVersion": "s19-gen-1 (mulberry32 + Box-Muller cosine)",
+  "policyId": "s19-association-v1",
+  "engineVersion": "s19-engine-1.0.0",
+  "delta": 0.2,
+  "permutations": 199,
+  "seedsPerCell": 30,
+  "splits": {
+    "development": { "start": 0, "count": 200 },
+    "heldout": { "start": 10000, "count": 100 }
+  },
+  "sizes": [80, 200, 800],
+  "signs": [1, -1],
+  "families": {
+    "real_adjusted": { "ratios": [2] },
+    "real_weak": { "ratios": [0.5] },
+    "real_boundary": { "ratios": [1] },
+    "confounded_observed": { "ratios": [0] },
+    "null": { "ratios": [0] },
+    "outlier_contamination": { "ratios": [2] },
+    "unobserved_confounding": { "ratios": [0] },
+    "stress_heavy_tail": { "ratios": [0, 2] },
+    "stress_near_collinear": { "ratios": [0, 2] }
+  },
+  "browserCaseCap": 20,
+  "expectedCasesPerSplit": 1980
+}
