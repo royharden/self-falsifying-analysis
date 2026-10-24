@@ -24,8 +24,10 @@ const raw = import.meta.glob('./falsify/*.ts', { query: '?raw', import: 'default
 export type KernelFile = { path: string; sha256: string; text: string };
 
 export const kernelFiles: KernelFile[] = KERNEL_FILES.map((name) => {
-  const text = raw[`./falsify/${name}`];
-  if (typeof text !== 'string') throw new Error(`Kernel source ${name} is missing from the build.`);
+  const original = raw[`./falsify/${name}`];
+  if (typeof original !== 'string') throw new Error(`Kernel source ${name} is missing from the build.`);
+  // Line endings are normalized so a CRLF checkout and an LF build bind the same digest.
+  const text = original.replace(/\r\n?/g, '\n');
   return { path: `src/lib/falsify/${name}`, sha256: sha256Text(text), text };
 });
 

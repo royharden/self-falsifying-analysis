@@ -209,6 +209,10 @@ export function validateAttempt(value: unknown, protocol: ProtocolV1): string[] 
   if (typeof attempt.reason !== 'string' || attempt.reason.length > 1000) errors.push(`attempt ${attempt.ordinal} reason is invalid.`);
   if (typeof attempt.payloadHash !== 'string' || !HASH_PATTERN.test(attempt.payloadHash)) errors.push(`attempt ${attempt.ordinal} payload hash is invalid.`);
   if (errors.length > 0) return errors;
+  if (recipe.kind === 'adjusted_ols' && protocol.claim.z === null && attempt.outcome !== 'inapplicable' && NON_RESULT.includes(attempt.outcome) === false) {
+    errors.push('attempt 1 reports a primary result although no covariate was declared.');
+    return errors;
+  }
   if (NON_RESULT.includes(attempt.outcome)) {
     if (attempt.payload !== null) errors.push(`attempt ${attempt.ordinal} reports ${attempt.outcome} but carries numbers.`);
   } else if (attempt.payload === null) {
@@ -249,7 +253,63 @@ export function validateExecution(execution: ExecutionRecord, protocol: Protocol
   if (execution.status !== 'running') {
     for (const ordinal of expected) if (!seen.has(ordinal)) errors.push(`The execution is missing a terminal record for recipe ${ordinal}.`);
   }
+  if (errors.length === 0) errors.push(...crossCheck(execution, protocol));
+  errors.push(...checkEvents(execution));
   return errors;
+}
+
+/** Consistency between records of one execution that each look valid on their own. */
+function crossCheck(execution: ExecutionRecord, protocol: ProtocolV1): string[] {
+  const errors: string[] = [];
+  const byOrdinal = new Map(execution.attempts.map((attempt) => [attempt.ordinal, attempt]));
+  const baseline = byOrdinal.get(0)?.payload;
+  const baselineFit = baseline?.kind === 'baseline_ols' ? baseline.fit : null;
+  const influence = byOrdinal.get(2)?.payload;
+  if (influence?.kind === 'influence') {
+    if (influence.threshold !== protocol.influence.cookMultiplier / protocol.dataset.rowCount) {
+      errors.push('influence threshold is not the frozen multiplier / n.');
+    }
+    if (influence.candidates.length > 0 && !(influence.maxCookD > influence.threshold)) {
+      errors.push('influence reports candidates but no Cook’s D above the threshold.');
+    }
+    if (baselineFit && influence.reduced && influence.differenceFromOriginal !== null
+        && !numbersMatch(influence.differenceFromOriginal, influence.reduced.estimate - baselineFit.estimate)) {
+      errors.push('influence difference does not equal reduced minus baseline slope.');
+    }
+  }
+  const permutation = byOrdinal.get(4)?.payload;
+  if (permutation?.kind === 'predictor_permutation' && baselineFit && !numbersMatch(permutation.observedAbsSlope, Math.abs(baselineFit.estimate))) {
+    errors.push('permutation observed slope does not match the baseline slope.');
+  }
+  return errors;
+}
+
+const EVENT_TYPES = new Set([
+  'execution_started',
+  'attempt_started',
+  'attempt_finished',
+  'attempt_timed_out',
+  'execution_cancelled',
+  'execution_interrupted',
+  'execution_finished',
+]);
+
+function checkEvents(execution: ExecutionRecord): string[] {
+  if (!Array.isArray(execution.events)) return ['execution events are not a list.'];
+  for (const [index, event] of execution.events.entries()) {
+    const value = event as unknown;
+    if (
+      !isObject(value) ||
+      value.seq !== index ||
+      typeof value.at !== 'string' ||
+      !EVENT_TYPES.has(value.type as string) ||
+      !(value.ordinal === null || (Number.isInteger(value.ordinal) && (value.ordinal as number) >= 0 && (value.ordinal as number) <= 4)) ||
+      (value.label !== 'locally_observed' && value.label !== 'server_receipt')
+    ) {
+      return [`execution event ${index} is malformed.`];
+    }
+  }
+  return [];
 }
 
 /* ------------------------------------------------------------------ */

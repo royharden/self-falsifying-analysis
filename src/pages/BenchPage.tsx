@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { saveCampaign } from '../lib/api/persist';
+import { useAuth } from '../lib/auth';
 import { engineSourceDigest } from '../lib/engineSource';
 import { DEFAULT_MANIFEST, summarize, wilson, type CaseResult, type CampaignReport } from '../lib/falsify/evaluate';
 import { FAMILIES, type CaseSpec, type Family } from '../lib/falsify/generate';
@@ -38,6 +40,8 @@ export function BenchPage() {
   const [report, setReport] = useState<CampaignReport | null>(null);
   const [status, setStatus] = useState<'idle' | 'running' | 'cancelled' | 'done'>('idle');
   const handle = useRef<CampaignHandle | null>(null);
+  const auth = useAuth();
+  const [saveNote, setSaveNote] = useState<string | null>(null);
 
   useEffect(() => () => handle.current?.cancel(), []);
 
@@ -94,6 +98,14 @@ export function BenchPage() {
         <>
           <h2>Summary ({report.attemptedCases} attempted of {report.expectedCases} planned)</h2>
           <p className="muted">Every attempted case stays in its denominator, including failures. Rates show Wilson 95% intervals. These are a few seeded cases, not the benchmark result.</p>
+          {auth.email && status === 'done' ? (
+            <p>
+              <button type="button" className="secondary" onClick={() => void saveCampaign(report).then((result) => setSaveNote(result.ok ? 'Snapshot saved privately to your account.' : result.error))}>
+                Save this snapshot to my account
+              </button>{' '}
+              {saveNote}
+            </p>
+          ) : null}
           <div className="table-wrap">
             <table>
               <thead>

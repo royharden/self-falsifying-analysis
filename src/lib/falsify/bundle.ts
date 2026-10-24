@@ -69,9 +69,10 @@ export function newExecution(
   protocolHash: string,
   scope: ExecutionScope,
   parentExecutionId: string | null,
+  executionId: string = crypto.randomUUID(),
 ): ExecutionRecord {
   return {
-    executionId: crypto.randomUUID(),
+    executionId,
     analysisId,
     parentExecutionId,
     scope,

@@ -38,6 +38,12 @@ export function LogView({
         </div>
       ) : null}
 
+      {protocol.parentAnalysisId ? (
+        <p className="note">
+          Revision of an earlier analysis, frozen after its results could be seen. Treat it as exploration, not as an independent test.
+        </p>
+      ) : null}
+
       <dl className="protocol">
         <div><dt>Predictor → outcome</dt><dd>{claim.x} → {claim.y} ({claim.direction})</dd></div>
         <div><dt>Practical threshold</dt><dd>δ = {formatNumber(claim.delta)} {unit}</dd></div>

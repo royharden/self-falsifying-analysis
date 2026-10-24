@@ -61,7 +61,7 @@ export function AttemptPage({ record, ordinal, backHref }: { record: AnalysisRec
       {sameKernel ? (
         <p className="muted">
           This build ships kernel digest <code>{shortHash(engineSourceDigest)}</code>, the digest frozen in the protocol. The text below is the
-          exact source this build executes; it is displayed, never evaluated.
+          TypeScript source this build was compiled from; it is displayed, never evaluated.
         </p>
       ) : (
         <p className="error" role="alert">

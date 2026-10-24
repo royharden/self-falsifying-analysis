@@ -24,6 +24,17 @@ export function putSession(record: AnalysisRecord): void {
   emit();
 }
 
+export function removeSession(id: string): void {
+  records = records.filter((item) => item.id !== id);
+  emit();
+}
+
+/** Drops records loaded from or saved to an account; local tab-only work stays. */
+export function clearSavedRecords(): void {
+  records = records.filter((item) => item.persistence.kind === 'local');
+  emit();
+}
+
 export function subscribeSession(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);

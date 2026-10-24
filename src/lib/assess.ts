@@ -35,12 +35,15 @@ export function identityErrors(record: AnalysisRecord): string[] {
  * Regenerates facts and the headline from validated evidence. Stored derived
  * values are never displayed; a mismatch with them is itself an integrity error.
  */
-export function assess(record: AnalysisRecord, stored: { headlineCode: string; factsHash: string } | null = null): Assessment {
+export function assess(record: AnalysisRecord, storedOverride: { headlineCode: string; factsHash: string } | null = null): Assessment {
+  const stored = storedOverride ?? record.storedDerived;
   const execution = originalExecution(record);
   const integrityErrors = identityErrors(record);
   if (execution && integrityErrors.length === 0) {
     integrityErrors.push(...validateExecution(execution, record.protocol, record.protocolHash));
     if (execution.scope.kind !== 'full') integrityErrors.push('The original execution is not a full run.');
+    if (execution.parentExecutionId !== null) integrityErrors.push('The original execution must not have a parent.');
+    if (execution.analysisId !== record.id) integrityErrors.push('The original execution belongs to a different analysis.');
   }
   const facts = execution && integrityErrors.length === 0 ? factsFor(execution, record.protocol) : [];
   const factsHash = facts.length > 0 ? canonicalHash(facts) : null;

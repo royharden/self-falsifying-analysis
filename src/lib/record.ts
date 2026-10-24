@@ -14,6 +14,9 @@ export type Persistence =
 
 export type ShareState = { enabled: boolean; token: string | null };
 
+/** Derived values stored alongside evidence; only ever compared with regenerated ones. */
+export type StoredDerived = { headlineCode: string; factsHash: string };
+
 export type AnalysisRecord = {
   id: string;
   createdAt: string;
@@ -30,6 +33,9 @@ export type AnalysisRecord = {
   share: ShareState | null;
   /** Server lifecycle id of the original execution when saved via freeze_protocol. */
   serverExecutionId: string | null;
+  storedDerived: StoredDerived | null;
+  /** Executions already persisted on the server. */
+  savedExecutionIds: string[];
 };
 
 export function originalExecution(record: AnalysisRecord): ExecutionRecord | null {

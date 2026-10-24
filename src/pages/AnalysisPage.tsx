@@ -2,12 +2,14 @@ import { useEffect, useMemo } from 'react';
 import { LogView } from '../components/LogView';
 import { PersistPanel } from '../components/PersistPanel';
 import { assess } from '../lib/assess';
+import { engineSourceDigest } from '../lib/engineSource';
 import { eventsJsonl } from '../lib/falsify/bundle';
 import { diffAttempts } from '../lib/falsify/grounding';
 import { shortHash } from '../lib/format';
 import { originalExecution, toBundle } from '../lib/record';
 import { cancel, isLive, launch, settleOrphans } from '../lib/runs';
 import { setRevision } from '../lib/session';
+import { runServerFrozen, syncErrorFor } from '../lib/serverRun';
 import { download, useSessionRecord } from '../lib/useRecord';
 import { useRemoteRecord } from '../lib/useRemoteRecord';
 
@@ -32,6 +34,8 @@ export function AnalysisPage({ id }: { id: string }) {
   const running = record.executions.find((execution) => execution.status === 'running' && isLive(execution.executionId));
   const reruns = record.executions.filter((execution) => execution.executionId !== record.originalExecutionId);
   const readOnly = record.persistence.kind === 'shared_view';
+  const canReplay =
+    record.protocol.engineSourceDigest === engineSourceDigest && assessment.integrityErrors.length === 0 && original !== null && original.status !== 'running';
 
   const exportBundle = () => {
     const derived = assessment.headline && assessment.factsHash ? { headlineCode: assessment.headline.code, factsHash: assessment.factsHash } : null;
@@ -43,9 +47,9 @@ export function AnalysisPage({ id }: { id: string }) {
       <LogView record={record} assessment={assessment} attemptHref={(ordinal) => `#/analyses/${encodeURIComponent(record.id)}/attempts/${ordinal}`} />
 
       <div className="actions">
-        {!original && !readOnly ? <button type="button" onClick={() => launch(record.id, { kind: 'full' })}>Run the frozen protocol</button> : null}
+        {!original && !readOnly ? <button type="button" onClick={() => runServerFrozen(record.id) || launch(record.id, { kind: 'full' })}>Run the frozen protocol</button> : null}
         {running ? <button type="button" className="secondary" onClick={() => cancel(running.executionId)}>Cancel</button> : null}
-        {original && original.status !== 'running' && !running ? (
+        {canReplay && !running ? (
           <button type="button" className="secondary" onClick={() => launch(record.id, { kind: 'full' })}>Rerun all five recipes</button>
         ) : null}
         {original && original.status !== 'running' ? (
@@ -69,6 +73,7 @@ export function AnalysisPage({ id }: { id: string }) {
           </button>
         ) : null}
       </div>
+      {syncErrorFor(record.id) ? <p className="error" role="alert">{syncErrorFor(record.id)} Local results are kept; export run.json if needed.</p> : null}
       {record.protocol.parentAnalysisId ? <p className="muted">Revision of analysis <code>{shortHash(record.protocol.parentAnalysisId)}</code>; the parent is unchanged.</p> : null}
 
       {reruns.length > 0 && original ? (

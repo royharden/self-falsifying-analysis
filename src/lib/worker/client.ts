@@ -155,9 +155,15 @@ export function startExecution(options: {
       }
       const fresh = createWorker();
       worker = fresh;
+      const loadTimer = setTimeout(() => {
+        fresh.removeEventListener('message', onLoaded);
+        if (worker === fresh) stopWorker();
+        reject(`The engine worker did not load within ${protocol.attemptDeadlineMs} ms.`);
+      }, protocol.attemptDeadlineMs);
       const onLoaded = (event: MessageEvent<unknown>) => {
         const message = event.data;
         if (!isWorkerResponse(message) || message.type !== 'loaded') return;
+        clearTimeout(loadTimer);
         fresh.removeEventListener('message', onLoaded);
         if (message.ok) {
           fresh.addEventListener('message', onMessage);
