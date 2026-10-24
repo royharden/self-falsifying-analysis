@@ -1,0 +1,4 @@
+project_id = "self-falsifying-analysis"
+
+[functions.plan-attacks]
+verify_jwt = true
