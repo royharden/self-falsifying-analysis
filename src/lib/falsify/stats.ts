@@ -1,30 +1,30 @@
 /**
- * Numerical Recipes gammln. Used only for the beta function behind the t p-value.
- * Attacks on one sample are dependent, so nothing here is a Type-I guarantee.
+ * Student t distribution and small numerical helpers.
+ * Known-answer checks against an independent reference are deferred (PLAN.md section 11).
  */
+
+const LANCZOS = [
+  0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059,
+  12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7,
+];
+
+/** ln Gamma(x) for x >= 0.5, Lanczos g = 7, n = 9. */
 export function logGamma(x: number): number {
-  const cof = [
-    76.18009172947146, -86.50532032941677, 24.01409824083091, -1.231739572450155, 0.1208650973866179e-2,
-    -0.5395239384953e-5,
-  ];
-  let y = x;
-  let tmp = x + 5.5;
-  tmp -= (x + 0.5) * Math.log(tmp);
-  let ser = 1.000000000190015;
-  for (let j = 0; j < cof.length; j += 1) {
-    y += 1;
-    ser += cof[j] / y;
-  }
-  return -tmp + Math.log((2.5066282746310005 * ser) / x);
+  const z = x - 1;
+  let a = LANCZOS[0];
+  const t = z + 7.5;
+  for (let i = 1; i < LANCZOS.length; i += 1) a += LANCZOS[i] / (z + i);
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(a);
 }
 
 export function logBeta(a: number, b: number): number {
   return logGamma(a) + logGamma(b) - logGamma(a + b);
 }
 
+/** Modified Lentz continued fraction for the incomplete beta function. */
 function betaContinuedFraction(x: number, a: number, b: number): number {
-  const maxSteps = 200;
-  const epsilon = 3e-14;
+  const maxSteps = 500;
+  const epsilon = 1e-15;
   const tiny = 1e-300;
   const qab = a + b;
   const qap = a + 1;
@@ -60,113 +60,74 @@ function betaContinuedFraction(x: number, a: number, b: number): number {
 export function regularizedIncompleteBeta(x: number, a: number, b: number): number {
   if (x <= 0) return 0;
   if (x >= 1) return 1;
-  const lnBeta = logBeta(a, b);
-  const threshold = (a + 1) / (a + b + 2);
-  const logFront = Math.log(x) * a + Math.log(1 - x) * b - lnBeta;
-  if (x < threshold) {
+  const logFront = Math.log(x) * a + Math.log1p(-x) * b - logBeta(a, b);
+  if (x < (a + 1) / (a + b + 2)) {
     return (Math.exp(logFront) / a) * betaContinuedFraction(x, a, b);
   }
   return 1 - (Math.exp(logFront) / b) * betaContinuedFraction(1 - x, b, a);
 }
 
-/** Two-sided Student t tail. df = 1 is Cauchy: t = sqrt(3) has p = 1/3. */
+/** Upper tail P(T > t) for t >= 0. */
+function upperTail(t: number, df: number): number {
+  if (t === 0) return 0.5;
+  const x = df / (df + t * t);
+  return 0.5 * regularizedIncompleteBeta(x, df / 2, 0.5);
+}
+
+/** Student t CDF. df = 1 is Cauchy: F(1) = 0.75. */
+export function studentTCdf(t: number, df: number): number {
+  if (Number.isNaN(t) || !Number.isFinite(df) || df <= 0) return Number.NaN;
+  if (t === Number.POSITIVE_INFINITY) return 1;
+  if (t === Number.NEGATIVE_INFINITY) return 0;
+  const tail = upperTail(Math.abs(t), df);
+  return t >= 0 ? 1 - tail : tail;
+}
+
+/** Two-sided p-value against zero. Descriptive diagnostic only. */
 export function studentTTwoSidedP(t: number, df: number): number {
-  if (!Number.isFinite(t) || !Number.isFinite(df) || df <= 0) return Number.NaN;
-  const absT = Math.abs(t);
-  if (absT === 0) return 1;
-  if (!Number.isFinite(absT)) return 0;
-  const x = df / (df + absT * absT);
-  const p = regularizedIncompleteBeta(x, df / 2, 0.5);
-  if (!Number.isFinite(p)) return Number.NaN;
-  return Math.min(1, Math.max(0, p));
+  if (Number.isNaN(t) || !Number.isFinite(df) || df <= 0) return Number.NaN;
+  if (!Number.isFinite(t)) return 0;
+  return Math.min(1, Math.max(0, 2 * upperTail(Math.abs(t), df)));
 }
 
 /**
- * Fisher's combination. df = 2k is even, so the chi-square survival is a
- * finite Poisson sum. A single input p is returned unchanged.
+ * Quantile for p in (0.5, 1): bisection on the upper tail, then the last bracket midpoint.
+ * Deterministic to the last few ulps; used for t_(0.975, df).
  */
-export function fisherCombinedP(pValues: readonly number[]): number | null {
-  const usable = pValues.filter((p) => Number.isFinite(p) && p > 0 && p <= 1);
-  if (usable.length === 0) return null;
-  let chiSquare = 0;
-  for (const p of usable) {
-    chiSquare += -2 * Math.log(Math.min(1, Math.max(p, 1e-300)));
+export function studentTQuantile(p: number, df: number): number {
+  if (!(p > 0.5 && p < 1) || !Number.isFinite(df) || df <= 0) return Number.NaN;
+  const target = 1 - p;
+  let lo = 0;
+  let hi = 1;
+  while (upperTail(hi, df) > target) {
+    hi *= 2;
+    if (hi > 1e12) return Number.NaN;
   }
-  const k = usable.length;
-  const x = chiSquare / 2;
-  let term = 1;
-  let sum = 1;
-  for (let m = 1; m < k; m += 1) {
-    term *= x / m;
-    sum += term;
-    if (!Number.isFinite(sum)) return 0;
+  for (let i = 0; i < 200; i += 1) {
+    const mid = 0.5 * (lo + hi);
+    if (mid === lo || mid === hi) break;
+    if (upperTail(mid, df) > target) lo = mid;
+    else hi = mid;
   }
-  const survivor = Math.exp(-x) * sum;
-  if (!Number.isFinite(survivor)) return 0;
-  return Math.min(1, Math.max(0, survivor));
+  return 0.5 * (lo + hi);
 }
 
-/** Benjamini-Hochberg adjusted p-values, same order as the input. */
-export function benjaminiHochberg(pValues: readonly number[]): number[] {
-  const m = pValues.length;
-  const order = pValues.map((p, index) => ({ p, index })).sort((a, b) => a.p - b.p);
-  const adjusted = new Array<number>(m);
-  let running = 1;
-  for (let rank = m - 1; rank >= 0; rank -= 1) {
-    const raw = (order[rank].p * m) / (rank + 1);
-    running = Math.min(running, raw);
-    adjusted[order[rank].index] = Math.min(1, Math.max(0, running));
+/** Neumaier compensated sum. */
+export function compensatedSum(values: ArrayLike<number>): number {
+  let sum = 0;
+  let correction = 0;
+  for (let i = 0; i < values.length; i += 1) {
+    const value = values[i];
+    const next = sum + value;
+    if (Math.abs(sum) >= Math.abs(value)) correction += sum - next + value;
+    else correction += value - next + sum;
+    sum = next;
   }
-  return adjusted;
+  return sum + correction;
 }
 
-/**
- * Vovk-style calibrator e(p) = 0.5 * p^(-0.5). Integral over (0, 1] is 1.
- * The product across attacks on one table is descriptive only.
- */
-export function eCalibrator(p: number): number {
-  const clamped = Math.min(1, Math.max(p, 1e-300));
-  return 0.5 / Math.sqrt(clamped);
-}
-
-export function eProduct(pValues: readonly number[]): { product: number; capped: boolean } | null {
-  if (pValues.length === 0) return null;
-  let product = 1;
-  let capped = false;
-  for (const p of pValues) {
-    product *= eCalibrator(p);
-    if (product > 1e12) {
-      product = 1e12;
-      capped = true;
-      break;
-    }
-  }
-  return { product, capped };
-}
-
-export function pearson(x: readonly number[], y: readonly number[]): number | null {
-  const n = x.length;
-  if (n !== y.length || n < 3) return null;
-  let meanX = 0;
-  let meanY = 0;
-  for (let i = 0; i < n; i += 1) {
-    meanX += x[i];
-    meanY += y[i];
-  }
-  meanX /= n;
-  meanY /= n;
-  let sxx = 0;
-  let syy = 0;
-  let sxy = 0;
-  for (let i = 0; i < n; i += 1) {
-    const dx = x[i] - meanX;
-    const dy = y[i] - meanY;
-    sxx += dx * dx;
-    syy += dy * dy;
-    sxy += dx * dy;
-  }
-  if (sxx <= 1e-18 || syy <= 1e-18) return null;
-  return sxy / Math.sqrt(sxx * syy);
+export function mean(values: ArrayLike<number>): number {
+  return compensatedSum(values) / values.length;
 }
 
 /** Average ranks, 1-based. Ties share the mean of the ranks they cover. */
