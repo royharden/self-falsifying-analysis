@@ -1,8 +1,22 @@
 import { useState, type FormEvent } from 'react';
 import { useAuth } from '../lib/auth';
-import { supabase, supabaseReady } from '../lib/supabase';
+import { authRedirect, supabase, supabaseReady } from '../lib/supabase';
 
-export function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
+type Mode = 'login' | 'signup' | 'forgot' | 'reset';
+
+const TITLE: Record<Mode, string> = {
+  login: 'Sign in',
+  signup: 'Create an account',
+  forgot: 'Reset your password',
+  reset: 'Choose a new password',
+};
+
+/**
+ * Email/password auth. Paid model planning additionally needs a confirmed email.
+ * Redirect URLs must be in the project's allowlist; recovery behaviour on the
+ * hosted origin is unverified until activation.
+ */
+export function AuthPage({ mode }: { mode: Mode }) {
   const auth = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -15,61 +29,87 @@ export function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
     setError(null);
     setMessage(null);
     if (!supabase) {
-      setError('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.');
+      setError('The backend is not configured. Local mode needs no account.');
       return;
     }
     setBusy(true);
-    if (mode === 'signup') {
-      const { data, error: signError } = await supabase.auth.signUp({ email, password });
+    try {
+      if (mode === 'signup') {
+        const { data, error: signError } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { emailRedirectTo: authRedirect('#/') },
+        });
+        if (signError) setError(signError.message);
+        else if (!data.session) setMessage('Check your inbox to confirm the address, then sign in.');
+        else window.location.hash = '#/';
+      } else if (mode === 'login') {
+        const { error: signError } = await supabase.auth.signInWithPassword({ email, password });
+        if (signError) setError(signError.message);
+        else window.location.hash = '#/';
+      } else if (mode === 'forgot') {
+        const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: authRedirect('#/reset') });
+        // Same message either way so the form does not reveal which addresses have accounts.
+        if (resetError && resetError.status !== 400) setError(resetError.message);
+        else setMessage('If that address has an account, a reset link is on its way.');
+      } else {
+        const { error: updateError } = await supabase.auth.updateUser({ password });
+        if (updateError) setError(updateError.message);
+        else {
+          setMessage('Password updated.');
+          window.location.hash = '#/';
+        }
+      }
+    } finally {
       setBusy(false);
-      if (signError) {
-        setError(signError.message);
-        return;
-      }
-      if (!data.session) {
-        setMessage('Account created. Confirm the email if the project requires it, then sign in.');
-        return;
-      }
-      window.location.hash = '#/';
-      return;
     }
-    const { error: signError } = await supabase.auth.signInWithPassword({ email, password });
-    setBusy(false);
-    if (signError) {
-      setError(signError.message);
-      return;
-    }
-    window.location.hash = '#/';
   }
+
+  const needsEmail = mode !== 'reset';
+  const needsPassword = mode !== 'forgot';
 
   return (
     <section>
-      <h1>{mode === 'signup' ? 'Create an account' : 'Sign in'}</h1>
-      {!supabaseReady ? (
-        <p className="error" role="alert">Supabase is not configured. The workshop demo still runs without an account.</p>
+      <h1>{TITLE[mode]}</h1>
+      {!supabaseReady ? <p className="error" role="alert">The backend is not configured. Demos, CSV analyses and the benchmark work without an account.</p> : null}
+      {auth.email && mode !== 'reset' ? (
+        <p>
+          Signed in as {auth.email}.{' '}
+          {auth.emailVerified ? 'Email confirmed.' : 'Email not confirmed yet: saving works, the paid model planner does not.'}
+        </p>
       ) : null}
-      {auth.email ? <p>Signed in as {auth.email}.</p> : null}
+      {mode === 'reset' && !auth.email ? <p className="muted">Open this page from the reset link in your email.</p> : null}
       <form className="stack" onSubmit={(event) => void onSubmit(event)}>
-        <label>
-          Email
-          <input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
-        </label>
-        <label>
-          Password
-          <input
-            type="password"
-            autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            minLength={8}
-            required
-          />
-        </label>
+        {needsEmail ? (
+          <label>
+            Email
+            <input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
+          </label>
+        ) : null}
+        {needsPassword ? (
+          <label>
+            {mode === 'reset' ? 'New password' : 'Password'}
+            <input
+              type="password"
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              minLength={8}
+              required
+            />
+          </label>
+        ) : null}
         {error ? <p className="error" role="alert">{error}</p> : null}
         {message ? <p role="status">{message}</p> : null}
-        <button type="submit" disabled={busy || !supabaseReady}>{busy ? 'Working…' : mode === 'signup' ? 'Create account' : 'Sign in'}</button>
+        <button type="submit" disabled={busy || !supabaseReady || (mode === 'reset' && !auth.email)}>
+          {busy ? 'Working…' : TITLE[mode]}
+        </button>
       </form>
-      {mode === 'login' ? <p><a href="#/signup">Create an account</a></p> : <p><a href="#/login">Sign in</a></p>}
+      <p className="actions">
+        {mode !== 'login' ? <a href="#/login">Sign in</a> : null}
+        {mode !== 'signup' ? <a href="#/signup">Create an account</a> : null}
+        {mode !== 'forgot' && mode !== 'reset' ? <a href="#/forgot">Forgot password</a> : null}
+      </p>
     </section>
   );
 }

@@ -1,86 +1,153 @@
-import { studentTTwoSidedP } from './stats';
-import type { Fit, FitError } from './types';
+import { compensatedSum, mean, studentTQuantile, studentTTwoSidedP } from './stats';
+import type { FitFailure, FitSummary } from './types';
 
-const EXACT_SSE = 1e-12;
+/** Relative SSE below which a fit is treated as exact (SE = 0, point interval). */
+export const EXACT_RELATIVE_SSE = 1e-20;
+/** Default frozen conditioning guard for the adjusted fit (PLAN.md section 3.2). */
+export const MIN_RESIDUAL_VARIANCE_RATIO = 1e-8;
 
-/**
- * OLS slope of y on x with an intercept.
- * extraControls subtracts further parameters already removed from both series
- * (Frisch-Waugh-Lovell), so a one-confounder partial slope uses extraControls = 1
- * and df = n - 3.
- */
-export function simpleSlope(y: readonly number[], x: readonly number[], extraControls = 0): Fit | FitError {
-  const n = y.length;
-  if (x.length !== n) return { error: 'Column lengths differ.' };
-  const df = n - 2 - extraControls;
-  if (df < 1) return { error: 'Not enough rows for this fit.' };
-  let meanX = 0;
-  let meanY = 0;
-  for (let i = 0; i < n; i += 1) {
-    if (!Number.isFinite(x[i]) || !Number.isFinite(y[i])) return { error: 'Non-finite value.' };
-    meanX += x[i];
-    meanY += y[i];
-  }
-  meanX /= n;
-  meanY /= n;
-  let sxx = 0;
-  let syy = 0;
-  let sxy = 0;
-  for (let i = 0; i < n; i += 1) {
-    const dx = x[i] - meanX;
-    const dy = y[i] - meanY;
-    sxx += dx * dx;
-    syy += dy * dy;
-    sxy += dx * dy;
-  }
-  if (sxx <= 1e-18) return { error: 'Predictor has no variation.' };
-  const estimate = sxy / sxx;
-  const intercept = meanY - estimate * meanX;
-  let sse = 0;
-  for (let i = 0; i < n; i += 1) {
-    const residual = y[i] - (intercept + estimate * x[i]);
-    sse += residual * residual;
-  }
-  const rSquared = syy <= 1e-18 ? 1 : 1 - sse / syy;
-  if (sse <= EXACT_SSE * (syy + 1)) {
-    if (Math.abs(estimate) <= 1e-10) {
-      return {
-        estimate: 0,
-        intercept,
-        standardError: 0,
-        tStatistic: 0,
-        pValue: 1,
-        n,
-        df,
-        rSquared: 0,
-      };
-    }
-    return {
-      estimate,
-      intercept,
-      standardError: 0,
-      tStatistic: estimate > 0 ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY,
-      pValue: 0,
-      n,
-      df,
-      rSquared: 1,
-    };
-  }
-  const sigma2 = sse / df;
-  const standardError = Math.sqrt(sigma2 / sxx);
-  const tStatistic = estimate / standardError;
-  const pValue = studentTTwoSidedP(tStatistic, df);
-  return { estimate, intercept, standardError, tStatistic, pValue, n, df, rSquared };
+export type BaselineDetail = {
+  fit: FitSummary;
+  dx: number[];
+  residuals: number[];
+  sxx: number;
+  mse: number;
+};
+
+function fail(reasonCode: string, failure: string): FitFailure {
+  return { reasonCode, failure };
 }
 
-/** Partial slope of y on x given one control z. Singular when x is linear in z. */
-export function partialSlope(y: readonly number[], x: readonly number[], z: readonly number[]): Fit | FitError {
-  if (y.length !== z.length || x.length !== z.length) return { error: 'Column lengths differ.' };
-  const yOnZ = simpleSlope(y, z, 0);
-  const xOnZ = simpleSlope(x, z, 0);
-  if ('error' in yOnZ) return yOnZ;
-  if ('error' in xOnZ) return xOnZ;
-  const yResidual = y.map((value, index) => value - (yOnZ.intercept + yOnZ.estimate * z[index]));
-  const xResidual = x.map((value, index) => value - (xOnZ.intercept + xOnZ.estimate * z[index]));
-  return simpleSlope(yResidual, xResidual, 1);
+function allFinite(values: readonly number[]): boolean {
+  for (const value of values) if (!Number.isFinite(value)) return false;
+  return true;
+}
+
+function isConstant(values: readonly number[]): boolean {
+  for (let i = 1; i < values.length; i += 1) if (values[i] !== values[0]) return false;
+  return true;
+}
+
+function squares(values: readonly number[]): number {
+  return compensatedSum(values.map((value) => value * value));
+}
+
+function products(left: readonly number[], right: readonly number[]): number {
+  return compensatedSum(left.map((value, index) => value * right[index]));
+}
+
+function summarize(
+  n: number,
+  df: number,
+  estimate: number,
+  sse: number,
+  totalResidualSs: number,
+  sxx: number,
+): { fit: FitSummary; mse: number } | FitFailure {
+  const tCrit = studentTQuantile(0.975, df);
+  if (!Number.isFinite(tCrit)) return fail('t_quantile_failed', 'The t quantile could not be computed.');
+  const exact = totalResidualSs === 0 || sse <= EXACT_RELATIVE_SSE * totalResidualSs;
+  if (exact) {
+    return {
+      mse: 0,
+      fit: { n, df, estimate, se: 0, lo: estimate, hi: estimate, tCrit, sse, exact: true, pDescriptive: estimate === 0 ? 1 : 0 },
+    };
+  }
+  const mse = sse / df;
+  const se = Math.sqrt(mse / sxx);
+  if (!Number.isFinite(se) || !Number.isFinite(estimate)) {
+    return fail('nonfinite_fit', 'The fit produced a non-finite value.');
+  }
+  const halfWidth = tCrit * se;
+  return {
+    mse,
+    fit: {
+      n,
+      df,
+      estimate,
+      se,
+      lo: estimate - halfWidth,
+      hi: estimate + halfWidth,
+      tCrit,
+      sse,
+      exact: false,
+      pDescriptive: studentTTwoSidedP(estimate / se, df),
+    },
+  };
+}
+
+/** Centered simple OLS of y on x with an intercept, df = n - 2, classical 95% t interval. */
+export function baselineDetail(x: readonly number[], y: readonly number[]): BaselineDetail | FitFailure {
+  const n = y.length;
+  if (x.length !== n) return fail('length_mismatch', 'Column lengths differ.');
+  if (n - 2 < 1) return fail('too_few_rows', 'Not enough rows for this fit.');
+  if (!allFinite(x) || !allFinite(y)) return fail('nonfinite_input', 'A value is not finite.');
+  if (isConstant(x)) return fail('constant_predictor', 'The predictor has no variation.');
+  const mx = mean(x);
+  const my = mean(y);
+  const dx = x.map((value) => value - mx);
+  const dy = y.map((value) => value - my);
+  const sxx = squares(dx);
+  if (!(sxx > 0)) return fail('constant_predictor', 'The predictor has no numerical variation.');
+  const estimate = products(dx, dy) / sxx;
+  const residuals = dy.map((value, index) => value - estimate * dx[index]);
+  const sse = squares(residuals);
+  const syy = squares(dy);
+  const result = summarize(n, n - 2, estimate, sse, syy, sxx);
+  if ('failure' in result) return result;
+  return { fit: result.fit, dx, residuals, sxx, mse: result.mse };
+}
+
+export function fitBaseline(x: readonly number[], y: readonly number[]): FitSummary | FitFailure {
+  const detail = baselineDetail(x, y);
+  return 'failure' in detail ? detail : detail.fit;
+}
+
+export type AdjustedFit = { fit: FitSummary; residualVarianceRatio: number };
+
+/**
+ * One-control Frisch-Waugh-Lovell: residualize centered x and y on centered z,
+ * slope the residuals, SE from the full-model residuals with df = n - 3.
+ */
+export function fitAdjusted(
+  x: readonly number[],
+  y: readonly number[],
+  z: readonly number[],
+  minResidualVarianceRatio = MIN_RESIDUAL_VARIANCE_RATIO,
+): AdjustedFit | FitFailure {
+  const n = y.length;
+  if (x.length !== n || z.length !== n) return fail('length_mismatch', 'Column lengths differ.');
+  if (n - 3 < 1) return fail('too_few_rows', 'Not enough rows for this fit.');
+  if (!allFinite(x) || !allFinite(y) || !allFinite(z)) return fail('nonfinite_input', 'A value is not finite.');
+  if (isConstant(x)) return fail('constant_predictor', 'The predictor has no variation.');
+  if (isConstant(z)) return fail('constant_covariate', 'The covariate has no variation.');
+  const mx = mean(x);
+  const my = mean(y);
+  const mz = mean(z);
+  const dx = x.map((value) => value - mx);
+  const dy = y.map((value) => value - my);
+  const dz = z.map((value) => value - mz);
+  const szz = squares(dz);
+  const sxx = squares(dx);
+  if (!(szz > 0)) return fail('constant_covariate', 'The covariate has no numerical variation.');
+  if (!(sxx > 0)) return fail('constant_predictor', 'The predictor has no numerical variation.');
+  const bxz = products(dx, dz) / szz;
+  const byz = products(dy, dz) / szz;
+  const xr = dx.map((value, index) => value - bxz * dz[index]);
+  const yr = dy.map((value, index) => value - byz * dz[index]);
+  const sxxRes = squares(xr);
+  const ratio = sxxRes / sxx;
+  if (!Number.isFinite(ratio) || ratio < minResidualVarianceRatio) {
+    return fail(
+      'ill_conditioned',
+      `The predictor is almost a linear function of the covariate (residual variance ratio below ${minResidualVarianceRatio}).`,
+    );
+  }
+  const estimate = products(xr, yr) / sxxRes;
+  const residuals = yr.map((value, index) => value - estimate * xr[index]);
+  const sse = squares(residuals);
+  const syyRes = squares(yr);
+  const result = summarize(n, n - 3, estimate, sse, syyRes, sxxRes);
+  if ('failure' in result) return result;
+  return { fit: result.fit, residualVarianceRatio: ratio };
 }

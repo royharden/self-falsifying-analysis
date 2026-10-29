@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 export type Route =
   | { name: 'home' }
-  | { name: 'auth'; mode: 'login' | 'signup' }
+  | { name: 'auth'; mode: 'login' | 'signup' | 'forgot' | 'reset' }
   | { name: 'new' }
   | { name: 'bench' }
   | { name: 'analysis'; id: string }
@@ -15,6 +15,8 @@ export function parseHash(hash: string): Route {
   if (parts.length === 0) return { name: 'home' };
   if (parts[0] === 'login') return { name: 'auth', mode: 'login' };
   if (parts[0] === 'signup') return { name: 'auth', mode: 'signup' };
+  if (parts[0] === 'forgot') return { name: 'auth', mode: 'forgot' };
+  if (parts[0] === 'reset') return { name: 'auth', mode: 'reset' };
   if (parts[0] === 'new') return { name: 'new' };
   if (parts[0] === 'bench') return { name: 'bench' };
   if (parts[0] === 'analyses' && parts[1] && parts[2] === 'attempts' && parts[3]) {

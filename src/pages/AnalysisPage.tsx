@@ -1,104 +1,111 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { LogView } from '../components/LogView';
-import { loadRemote, saveAnalysis, setShared } from '../lib/api/persist';
-import { useAuth } from '../lib/auth';
-import type { AnalysisRecord } from '../lib/record';
-import { getSession, putSession } from '../lib/session';
-import { supabaseReady } from '../lib/supabase';
+import { PersistPanel } from '../components/PersistPanel';
+import { assess } from '../lib/assess';
+import { engineSourceDigest } from '../lib/engineSource';
+import { eventsJsonl } from '../lib/falsify/bundle';
+import { diffAttempts } from '../lib/falsify/grounding';
+import { shortHash } from '../lib/format';
+import { originalExecution, toBundle } from '../lib/record';
+import { cancel, isLive, launch, settleOrphans } from '../lib/runs';
+import { setRevision } from '../lib/session';
+import { runServerFrozen, syncErrorFor } from '../lib/serverRun';
+import { download, useSessionRecord } from '../lib/useRecord';
+import { useRemoteRecord } from '../lib/useRemoteRecord';
 
 export function AnalysisPage({ id }: { id: string }) {
-  const auth = useAuth();
-  const [record, setRecord] = useState<AnalysisRecord | null>(() => getSession(id) ?? null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const record = useSessionRecord(id);
+  const remote = useRemoteRecord(id, record === undefined);
 
-  useEffect(() => {
-    const cached = getSession(id);
-    if (cached) {
-      setRecord(cached);
-      return undefined;
-    }
-    if (!supabaseReady || id.startsWith('local-')) {
-      setError('This run is not in the browser session.');
-      return undefined;
-    }
-    let active = true;
-    void loadRemote(id).then((result) => {
-      if (!active) return;
-      if (!result.ok) setError(result.error);
-      else {
-        putSession(result.record);
-        setRecord(result.record);
-      }
-    });
-    return () => {
-      active = false;
-    };
-  }, [id]);
+  useEffect(() => settleOrphans(id), [id]);
 
-  async function onSave() {
-    if (!record) return;
-    setBusy(true);
-    setError(null);
-    const result = await saveAnalysis(record);
-    setBusy(false);
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
-    putSession(result.record);
-    window.location.hash = `#/analyses/${result.record.id}`;
-  }
+  const assessment = useMemo(() => (record ? assess(record) : null), [record]);
 
-  async function onShare(next: boolean) {
-    if (!record?.saved) return;
-    setBusy(true);
-    setError(null);
-    const result = await setShared(record.id, next);
-    setBusy(false);
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
-    const updated = { ...record, isShared: next };
-    putSession(updated);
-    setRecord(updated);
-  }
-
-  if (!record) {
+  if (!record || !assessment) {
     return (
       <section>
-        <h1>Run</h1>
-        {error ? <p className="error" role="alert">{error}</p> : <p>Loading…</p>}
+        <h1>Analysis</h1>
+        {remote.error ? <p className="error" role="alert">{remote.error}</p> : <p>{remote.loading ? 'Loading…' : 'This analysis is not in this browser tab.'}</p>}
       </section>
     );
   }
 
-  const shareUrl = record.shareToken
-    ? `${window.location.origin}${window.location.pathname}#/share/${encodeURIComponent(record.shareToken)}`
-    : '';
+  const original = originalExecution(record);
+  const running = record.executions.find((execution) => execution.status === 'running' && isLive(execution.executionId));
+  const reruns = record.executions.filter((execution) => execution.executionId !== record.originalExecutionId);
+  const readOnly = record.persistence.kind === 'shared_view';
+  const canReplay =
+    record.protocol.engineSourceDigest === engineSourceDigest && assessment.integrityErrors.length === 0 && original !== null && original.status !== 'running';
+
+  const exportBundle = () => {
+    const derived = assessment.headline && assessment.factsHash ? { headlineCode: assessment.headline.code, factsHash: assessment.factsHash } : null;
+    download(`analysis-${record.id}.run.json`, `${JSON.stringify(toBundle(record, derived), null, 2)}\n`, 'application/json');
+  };
 
   return (
     <section>
-      <LogView record={record} attemptHref={(ordinal) => `#/analyses/${encodeURIComponent(record.id)}/attempts/${ordinal}`} />
-      {error ? <p className="error" role="alert">{error}</p> : null}
-      {!record.saved && supabaseReady ? (
-        <p>
-          <button type="button" disabled={busy || !auth.email} onClick={() => void onSave()}>
-            {auth.email ? 'Save this run' : 'Sign in to save'}
+      <LogView record={record} assessment={assessment} attemptHref={(ordinal) => `#/analyses/${encodeURIComponent(record.id)}/attempts/${ordinal}`} />
+
+      <div className="actions">
+        {!original && !readOnly ? <button type="button" onClick={() => runServerFrozen(record.id) || launch(record.id, { kind: 'full' })}>Run the frozen protocol</button> : null}
+        {running ? <button type="button" className="secondary" onClick={() => cancel(running.executionId)}>Cancel</button> : null}
+        {canReplay && !running ? (
+          <button type="button" className="secondary" onClick={() => launch(record.id, { kind: 'full' })}>Rerun all five recipes</button>
+        ) : null}
+        {original && original.status !== 'running' ? (
+          <>
+            <button type="button" className="secondary" onClick={exportBundle}>Export run.json</button>
+            <button type="button" className="secondary" onClick={() => download(`analysis-${record.id}.events.jsonl`, eventsJsonl(toBundle(record, null)), 'application/x-ndjson')}>
+              Export events.jsonl
+            </button>
+          </>
+        ) : null}
+        {!readOnly && original && original.status !== 'running' ? (
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              setRevision(record);
+              window.location.hash = '#/new';
+            }}
+          >
+            Revise as a new linked analysis
           </button>
-        </p>
+        ) : null}
+      </div>
+      {syncErrorFor(record.id) ? <p className="error" role="alert">{syncErrorFor(record.id)} Local results are kept; export run.json if needed.</p> : null}
+      {record.protocol.parentAnalysisId ? <p className="muted">Revision of analysis <code>{shortHash(record.protocol.parentAnalysisId)}</code>; the parent is unchanged.</p> : null}
+
+      {reruns.length > 0 && original ? (
+        <section>
+          <h2>Reruns of the frozen protocol</h2>
+          <p className="muted">
+            Scientific numbers match when |a − b| ≤ 1e-12 + 1e-9·max(|a|, |b|); counts, n, df, masks, hashes and outcomes must match exactly.
+            Reruns never issue a new headline.
+          </p>
+          <ul>
+            {reruns.map((execution) => {
+              const compared = execution.attempts.map((attempt) => {
+                const stored = original.attempts.find((item) => item.ordinal === attempt.ordinal);
+                return { ordinal: attempt.ordinal, diffs: stored ? diffAttempts(stored, attempt) : null };
+              });
+              const differing = compared.filter((item) => item.diffs === null || item.diffs.length > 0);
+              return (
+                <li key={execution.executionId}>
+                  {execution.scope.kind === 'full' ? 'Full rerun' : `Recipe ${execution.scope.ordinal + 1} rerun`} — {execution.status};{' '}
+                  {execution.status === 'running'
+                    ? 'in progress'
+                    : differing.length === 0
+                      ? `all ${compared.length} compared record(s) match`
+                      : `${differing.length} record(s) differ: ${differing.map((item) => `#${item.ordinal + 1}${item.diffs ? ` (${item.diffs.map((d) => d.path).slice(0, 4).join(', ')})` : ' (no stored record)'}`).join('; ')}`}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       ) : null}
-      {!supabaseReady ? <p className="muted">This run stays in the browser tab until Supabase is configured.</p> : null}
-      {record.saved && record.shareToken ? (
-        <div className="stack">
-          <label>
-            <input type="checkbox" checked={record.isShared} disabled={busy} onChange={(event) => void onShare(event.target.checked)} />
-            Share a read-only link. This publishes the table, the claim, and the attempt log.
-          </label>
-          {record.isShared ? <p><a href={shareUrl}>{shareUrl}</a></p> : null}
-        </div>
-      ) : null}
+
+      <PersistPanel record={record} assessment={assessment} />
     </section>
   );
 }

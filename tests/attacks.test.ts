@@ -1,68 +1,160 @@
 import { describe, expect, it } from 'vitest';
-import { runAttack, selectConfounder } from '../src/lib/falsify/attacks';
-import { buildDeterministicPlan, programFor } from '../src/lib/falsify/planSchema';
-import { attemptsMatch, rerunProgram, runAnalysis } from '../src/lib/falsify/runner';
-import type { ClaimSpec, Table } from '../src/lib/falsify/types';
+import { headlineFor } from '../src/lib/falsify/aggregate';
+import { runRecipe } from '../src/lib/falsify/attacks';
+import { workshopFixture } from '../src/lib/falsify/generate';
+import { buildProtocol, DEFAULT_SECONDARY_ORDER, type CovariateChoice } from '../src/lib/falsify/planSchema';
+import { runFull } from '../src/lib/falsify/runner';
+import { normalizedTableHash } from '../src/lib/falsify/table';
+import type { DatasetIdentity, Direction, ProtocolV1, Table } from '../src/lib/falsify/types';
 
-const z = [1, 1, 1, 1, -1, -1, -1, -1];
-const shock = [1, -1, 1, -1, 1, -1, 1, -1];
-const x = z.map((value, index) => value + 0.5 * shock[index]);
+const DIGEST = 'a'.repeat(64);
 
-const spurious: Table = {
-  columns: ['x', 'y', 'z', 'decoy'],
-  rows: x.map((value, index) => [value, z[index], z[index], shock[index]]),
-};
+function identity(table: Table): DatasetIdentity {
+  return {
+    normalizedHash: normalizedTableHash(table),
+    rowCount: table.rows.length,
+    columnCount: table.columns.length,
+    source: { kind: 'fixture', fixtureId: 'test', generatorVersion: 'test', seed: 0, parameters: {} },
+  };
+}
 
-const claim: ClaimSpec = {
-  statement: 'x raises y.',
-  outcome: 'y',
-  predictor: 'x',
-  direction: 'positive',
-  confounder: null,
-};
+function protocolFor(
+  table: Table,
+  options: { covariate?: CovariateChoice; direction?: Direction; delta?: number; seed?: number } = {},
+): ProtocolV1 {
+  const built = buildProtocol({
+    table,
+    dataset: identity(table),
+    claim: {
+      statement: 'x moves y.',
+      x: table.columns[0],
+      y: table.columns[1],
+      covariate: options.covariate ?? { kind: 'none' },
+      direction: options.direction ?? 'positive',
+      delta: options.delta ?? 0.5,
+      xUnits: 'u',
+      yUnits: 'v',
+      iidAcknowledged: true,
+    },
+    seed: options.seed ?? 7,
+    permutations: 199,
+    secondaryOrder: DEFAULT_SECONDARY_ORDER,
+    engineSourceDigest: DIGEST,
+    parentAnalysisId: null,
+  });
+  if (!built.ok) throw new Error(built.errors.join('; '));
+  return built.protocol;
+}
 
-describe('attacks', () => {
-  it('picks the column that tracks both sides of a spurious association', () => {
-    expect(selectConfounder(spurious, claim)).toBe('z');
+/** Deterministic, roughly symmetric small noise without a PRNG. */
+const wiggle = (i: number) => ((i * 37) % 11) / 10 - 0.5;
+
+function line(n: number, slope: number): Table {
+  return { columns: ['x', 'y'], rows: Array.from({ length: n }, (_, i) => [i, slope * i + wiggle(i)]) };
+}
+
+describe('workshop fixtures (target behaviour once activated)', () => {
+  it('confounded demo: baseline reproduced, primary challenged', () => {
+    const fixture = workshopFixture('confounded');
+    const built = buildProtocol({
+      table: fixture.table,
+      dataset: fixture.dataset,
+      claim: {
+        statement: fixture.suggestion.statement,
+        x: 'hours',
+        y: 'final_score',
+        covariate: { kind: 'asserted', column: 'prior_score', confirmed: true },
+        direction: 'positive',
+        delta: 0.5,
+        xUnits: 'hours',
+        yUnits: 'points',
+        iidAcknowledged: true,
+      },
+      seed: 19019,
+      permutations: 199,
+      secondaryOrder: DEFAULT_SECONDARY_ORDER,
+      engineSourceDigest: DIGEST,
+      parentAnalysisId: null,
+    });
+    if (!built.ok) throw new Error(built.errors.join('; '));
+    const attempts = runFull(fixture.table, built.protocol);
+    expect(attempts.map((a) => a.ordinal)).toEqual([0, 1, 2, 3, 4]);
+    expect(attempts[0].outcome).toBe('baseline_reproduced');
+    expect(attempts[1].outcome).toBe('challenged_primary');
+    expect(headlineFor(built.protocol, attempts).code).toBe('challenged');
+  });
+});
+
+describe('recipes', () => {
+  it('never mutates the table rows', () => {
+    const table = line(60, 2);
+    const before = JSON.stringify(table);
+    runFull(table, protocolFor(table));
+    expect(JSON.stringify(table)).toBe(before);
   });
 
-  it('falsifies the hand-built spurious table and reruns the same program', () => {
-    const planned = buildDeterministicPlan(spurious, claim, { seed: 11, alpha: 0.05, placeboReplicates: 19 });
-    expect(planned.ok).toBe(true);
-    if (!planned.ok) return;
-    const run = runAnalysis(spurious, planned.plan);
-    const naive = run.attempts.find((attempt) => attempt.kind === 'naive');
-    const confounder = run.attempts.find((attempt) => attempt.kind === 'confounder_control');
-    expect(naive?.supportsClaim).toBe(true);
-    expect(naive?.estimate).toBeCloseTo(0.8, 8);
-    expect(confounder?.undermines).toBe(true);
-    expect(confounder?.estimate).toBe(0);
-    expect(confounder?.program.confounder).toBe('z');
-    expect(run.verdict).toBe('falsified');
-    const rerun = rerunProgram(spurious, planned.plan, confounder?.ordinal ?? -1);
-    expect(rerun).not.toBeNull();
-    if (!confounder || !rerun) return;
-    expect(attemptsMatch(confounder, rerun)).toBe(true);
-    expect(rerun.sourceText).toBe(confounder.sourceText);
+  it('marks the primary inapplicable when no covariate is declared', () => {
+    const table = line(60, 2);
+    const attempt = runRecipe(table, protocolFor(table), 1);
+    expect(attempt.outcome).toBe('inapplicable');
+    expect(attempt.reasonCode).toBe('no_covariate');
+    expect(attempt.payload).toBeNull();
   });
 
-  it('keeps a placebo p-value inside (0, 1]', () => {
-    const planned = buildDeterministicPlan(spurious, claim, { seed: 3, placeboReplicates: 19 });
-    expect(planned.ok).toBe(true);
-    if (!planned.ok) return;
-    const placebo = runAnalysis(spurious, planned.plan).attempts.find((attempt) => attempt.kind === 'placebo_shuffle');
-    expect(placebo?.pValue).toBeGreaterThan(0);
-    expect(placebo?.pValue).toBeLessThanOrEqual(1);
+  it('negative claims mirror positive claims', () => {
+    const table = line(60, 2);
+    const mirrored: Table = { columns: ['x', 'y'], rows: table.rows.map(([x, y]) => [x, -y]) };
+    const pos = runRecipe(table, protocolFor(table), 0);
+    const neg = runRecipe(mirrored, protocolFor(mirrored, { direction: 'negative' }), 0);
+    expect(pos.outcome).toBe('baseline_reproduced');
+    expect(neg.outcome).toBe('baseline_reproduced');
   });
 
-  it('does not treat a collinear control as an undermine', () => {
-    const table: Table = {
-      columns: ['x', 'y', 'z'],
-      rows: Array.from({ length: 8 }, (_, index) => [index + 1, index + 2, index + 1]),
-    };
-    const program = programFor('confounder_control', { ...claim, confounder: 'z' }, 1, 0.05, 19, 'z');
-    const attempt = runAttack(table, program, 0);
-    expect(attempt.error).toBe('Predictor has no variation.');
-    expect(attempt.undermines).toBe(false);
+  it('an opposite-direction effect is never supportive', () => {
+    const table = line(60, -2);
+    expect(runRecipe(table, protocolFor(table), 0).outcome).toBe('baseline_not_reproduced');
+  });
+
+  it('flags a planted high-influence row and keeps both row counts', () => {
+    const table = line(60, 1);
+    table.rows[59] = [200, -400];
+    const attempt = runRecipe(table, protocolFor(table), 2);
+    expect(attempt.payload?.kind).toBe('influence');
+    if (attempt.payload?.kind !== 'influence') return;
+    expect(attempt.payload.candidates).toContain(59);
+    expect(attempt.payload.nOriginal).toBe(60);
+    if (attempt.payload.nReduced !== null) expect(attempt.payload.nReduced).toBe(60 - attempt.payload.candidates.length);
+  });
+
+  it('marks influence inapplicable on an exact fit (zero MSE)', () => {
+    const table: Table = { columns: ['x', 'y'], rows: Array.from({ length: 50 }, (_, i) => [i, 3 * i + 1]) };
+    expect(runRecipe(table, protocolFor(table), 2).reasonCode).toBe('zero_mse');
+  });
+
+  it('rank sensitivity flags only a reversal and never applies delta', () => {
+    const table = line(60, 0.1);
+    const attempt = runRecipe(table, protocolFor(table, { delta: 1000 }), 3);
+    expect(attempt.outcome).toBe('no_flag');
+    const reversed = runRecipe(line(60, -1), protocolFor(line(60, -1)), 3);
+    expect(reversed.outcome).toBe('sensitivity_flag');
+  });
+
+  it('permutation uses the plus-one proportion, is seeded and never flags', () => {
+    const table = line(60, 2);
+    const protocol = protocolFor(table);
+    const first = runRecipe(table, protocol, 4);
+    const second = runRecipe(table, protocol, 4);
+    expect(first.payloadHash).toBe(second.payloadHash);
+    expect(first.outcome).toBe('no_flag');
+    if (first.payload?.kind !== 'predictor_permutation') throw new Error('missing payload');
+    expect(first.payload.tailProportion).toBe((1 + first.payload.exceedances) / (first.payload.permutations + 1));
+    expect(first.payload.tailProportion).toBeGreaterThanOrEqual(1 / 200);
+  });
+
+  it('refuses a recipe whose ordinal does not match its kind', () => {
+    const table = line(60, 2);
+    const protocol = protocolFor(table);
+    const swapped: ProtocolV1 = { ...protocol, recipes: [protocol.recipes[1], protocol.recipes[0], ...protocol.recipes.slice(2)] };
+    expect(() => runRecipe(table, swapped, 0)).toThrow();
   });
 });

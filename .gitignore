@@ -6,3 +6,18 @@ dist-ssr
 .env.*.local
 *.log
 .DS_Store
+
+# Local credentials and generated artifacts
+.creds/
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.zip
+.cache/
+.pytest_cache/
+.ruff_cache/
+coverage/
+build/

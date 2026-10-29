@@ -17,7 +17,7 @@ export function App() {
       <header className="top">
         <a className="brand" href="#/">Self-falsifying analysis</a>
         <nav>
-          <a href="#/new">New run</a>
+          <a href="#/new">New analysis</a>
           <a href="#/bench">Bench</a>
           {auth.email ? <span className="who">{auth.email}</span> : <a href="#/login">Sign in</a>}
           {auth.email ? (
@@ -28,8 +28,8 @@ export function App() {
       <main>
         {!auth.configured ? (
           <p className="banner">
-            Database is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to save runs and use the model planner.
-            The workshop demo, CSV runs, reruns, and the bench still work in this tab.
+            Local guided mode: no backend is configured (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY). Demos, CSV analyses, reruns,
+            exports and the benchmark run entirely in this tab. Nothing is saved or uploaded, and a reload loses unsaved work.
           </p>
         ) : null}
         {route.name === 'home' ? <HomePage /> : null}
